@@ -11,7 +11,7 @@ from src.analysis.metrics import metrics_from_log
 from src.analysis.plots import plot_timeseries
 
 def parse_grid(s):
-    # "30x30" -> (30,30)
+    # "50x50" -> (50,50)
     s = s.lower().replace(' ', '')
     if 'x' not in s:
         raise argparse.ArgumentTypeError("Grid must be like 30x30")
