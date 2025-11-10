@@ -127,5 +127,39 @@ def main():
 
     print(f"Done. Wrote:\n - {OUT/'metrics_summary_raw.csv'}\n - {OUT/'metrics_summary_grouped.csv'}\n - samples in {timeseries_dir}")
 
+    # --- Optional: upload artifacts to Azure Blob Storage ---
+import os, time
+from pathlib import Path
+
+AZ_BLOB_URL = os.getenv("AZ_BLOB_URL")  # e.g. https://<account>.blob.core.windows.net
+AZ_BLOB_SAS = os.getenv("AZ_BLOB_SAS")  # SAS token without leading '?'
+AZ_BLOB_CONTAINER = os.getenv("AZ_BLOB_CONTAINER", "thesis-artifacts")
+
+if AZ_BLOB_URL and AZ_BLOB_SAS:
+    try:
+        from azure.storage.blob import BlobServiceClient
+        ts = time.strftime("%Y%m%d-%H%M")
+        root = Path(args.outdir)
+
+        svc = BlobServiceClient(account_url=AZ_BLOB_URL, credential=AZ_BLOB_SAS)
+        cc = svc.get_container_client(AZ_BLOB_CONTAINER)
+        try:
+            cc.create_container()
+        except Exception:
+            pass
+
+        # upload all files under outdir -> <timestamp>/...
+        for p in root.rglob("*"):
+            if p.is_file():
+                blob_path = f"{ts}/{p.relative_to(root)}".replace("\\", "/")
+                with open(p, "rb") as f:
+                    cc.upload_blob(name=blob_path, data=f, overwrite=True)
+
+        # write or update 'latest.txt' pointer
+        cc.upload_blob(name="latest.txt", data=f"{ts}".encode("utf-8"), overwrite=True)
+        print(f"Uploaded artifacts to {AZ_BLOB_URL}/{AZ_BLOB_CONTAINER}/{ts} and updated latest.txt")
+    except Exception as ex:
+        print("Blob upload skipped or failed:", ex)
+
 if __name__ == "__main__":
     main()
