@@ -1,0 +1,16 @@
+# venv / bytecode / IDE
+.venv/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# outputs / artifacts
+outputs/
+*.png
+*.csv
+*.json

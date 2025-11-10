@@ -1,39 +1,35 @@
-# scripts/run_thesis_sweep.py
 import os, sys, json, argparse, itertools
 from pathlib import Path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pandas as pd
-
 from src.experiments.sim import run
 from src.experiments.scenarios import turbulence_schedule_factory
 from src.analysis.metrics import metrics_from_log
 from src.analysis.plots import plot_timeseries
 
-def parse_grid(s):
-    # "50x50" -> (50,50)
+def parse_grid(s: str):
     s = s.lower().replace(' ', '')
     if 'x' not in s:
         raise argparse.ArgumentTypeError("Grid must be like 30x30")
-    a,b = s.split('x')
+    a, b = s.split('x')
     return int(a), int(b)
 
 def get_controllers(ga_best_path=None):
-    # Baselines
     ctrls = {
         'PID-baseline': dict(kp=0.8, ki=0.05, kd=0.12),
         'PD':           dict(kp=0.8, ki=0.0,  kd=0.12),
         'P-only':       dict(kp=0.8, ki=0.0,  kd=0.0),
     }
-    # GA tuned
+    # GA tuned PID (fallback if file missing)
     if ga_best_path and Path(ga_best_path).exists():
         try:
             best = json.loads(Path(ga_best_path).read_text())
             ctrls['PID-GA'] = dict(kp=float(best['kp']), ki=float(best['ki']), kd=float(best['kd']))
         except Exception:
-            ctrls['PID-GA'] = dict(kp=0.15, ki=0.01, kd=0.006)  # fallback
+            ctrls['PID-GA'] = dict(kp=0.15, ki=0.01, kd=0.006)
     else:
-        ctrls['PID-GA'] = dict(kp=0.15, ki=0.01, kd=0.006)      # fallback
+        ctrls['PID-GA'] = dict(kp=0.15, ki=0.01, kd=0.006)
     return ctrls
 
 def main():
@@ -41,12 +37,13 @@ def main():
     ap.add_argument("--grids", default="30x30,40x40", help="Comma-separated grids, e.g. 30x30,40x40")
     ap.add_argument("--maneuvers", default="0.2,0.3,0.5", help="Comma-separated pitch-up deltas")
     ap.add_argument("--turbulence", default="low,med,high", help="Levels to sweep")
-    ap.add_argument("--failure", default="none,early,late", help="Failure windows: none,early,late")
+    ap.add_argument("--failure", default="none,early,late", help="Failure windows")
     ap.add_argument("--seeds", default="0,1,2,3,4", help="Comma-separated integer seeds")
     ap.add_argument("--T", type=int, default=600, help="Simulation horizon (steps)")
     ap.add_argument("--pitch_time", type=int, default=200, help="When to apply pitch-up")
     ap.add_argument("--ga-best", default="", help="Path to GA best PID json, e.g. outputs/best_pid.json")
     ap.add_argument("--outdir", default="outputs/thesis_artifacts", help="Where to write artifacts")
+    ap.add_argument("--max-runs", type=int, default=0, help="Stop after N runs (0 = no cap)")
     args = ap.parse_args()
 
     grids = [parse_grid(g) for g in args.grids.split(",") if g.strip()]
@@ -60,23 +57,28 @@ def main():
 
     ctrls = get_controllers(args.ga_best)
 
-    # Define turbulence schedules by level (you can tweak intensities)
+    # turbulence schedules by level
     def make_sched(level):
-        if level == 'low':   return turbulence_schedule_factory(low=0.0, mid=0.2, late=0.05, t1=int(0.3*args.T), t2=int(0.6*args.T))
-        if level == 'med':   return turbulence_schedule_factory(low=0.0, mid=0.35, late=0.1,  t1=int(0.3*args.T), t2=int(0.6*args.T))
-        if level == 'high':  return turbulence_schedule_factory(low=0.1, mid=0.5,  late=0.2,  t1=int(0.3*args.T), t2=int(0.6*args.T))
+        if level == 'low':
+            return turbulence_schedule_factory(low=0.0, mid=0.2, late=0.05, t1=int(0.3*args.T), t2=int(0.6*args.T))
+        if level == 'med':
+            return turbulence_schedule_factory(low=0.0, mid=0.35, late=0.1, t1=int(0.3*args.T), t2=int(0.6*args.T))
+        if level == 'high':
+            return turbulence_schedule_factory(low=0.1, mid=0.5,  late=0.2, t1=int(0.3*args.T), t2=int(0.6*args.T))
         raise ValueError(f"Unknown turbulence level: {level}")
 
-    # Failure windows relative to T
+    # failure windows relative to T
     def failure_window(mode):
-        if mode == 'none': return None
-        if mode == 'early': return (int(0.35*args.T), int(0.35*args.T)+20)
-        if mode == 'late':  return (int(0.65*args.T), int(0.65*args.T)+40)
+        if mode == 'none':  return None
+        if mode == 'early': return (int(0.35*args.T), int(0.35*args.T) + 20)
+        if mode == 'late':  return (int(0.65*args.T), int(0.65*args.T) + 40)
         raise ValueError(f"Unknown failure mode: {mode}")
 
     rows = []
-    # Sweep
-    for (gh,gw), man, turb, fail, (ctrl_name, ctrl_gains), seed in itertools.product(
+    total = len(grids) * len(man_list) * len(turb_levels) * len(fail_modes) * len(ctrls) * len(seeds)
+    done = 0
+
+    for (gh, gw), man, turb, fail, (ctrl_name, ctrl_gains), seed in itertools.product(
         grids, man_list, turb_levels, fail_modes, ctrls.items(), seeds
     ):
         sched = make_sched(turb)
@@ -100,24 +102,26 @@ def main():
         }
         rows.append(row)
 
-        # Save one sample timeseries per (grid,man,turb,fail,controller) using the first seed encountered
-        sample_key = (gh,gw,man,turb,fail,ctrl_name)
-        sample_name = f"g{gh}x{gw}_man{man}_t{turb}_f{fail}_{ctrl_name}".replace('.','p')
+        # Save one sample timeseries + plots per scenario×controller (first seed encountered)
+        sample_name = f"g{gh}x{gw}_man{man}_t{turb}_f{fail}_{ctrl_name}".replace('.', 'p')
         sample_csv = timeseries_dir / f"{sample_name}.csv"
         if not sample_csv.exists():
             df.to_csv(sample_csv, index=False)
-            # Also make a quick set of plots
             plot_timeseries(df, str(timeseries_dir / sample_name))
 
-    # Raw results
+        done += 1
+        if done % 25 == 0:
+            print(f"{done}/{total} runs...")
+        if args.max_runs and done >= args.max_runs:
+            break
+
+    # Raw results and grouped mean ± std
     df_raw = pd.DataFrame(rows)
     df_raw.to_csv(OUT / "metrics_summary_raw.csv", index=False)
 
-    # Grouped summary (mean ± std)
-    group_cols = ['grid','maneuver','turbulence','failure','controller']
-    agg_cols = ['overshoot','time_to_recover','stability_variance','control_effort','crash']
-    grouped = df_raw.groupby(group_cols)[agg_cols].agg(['mean','std']).reset_index()
-    # flatten multiindex columns
+    group_cols = ['grid', 'maneuver', 'turbulence', 'failure', 'controller']
+    agg_cols = ['overshoot', 'time_to_recover', 'stability_variance', 'control_effort', 'crash']
+    grouped = df_raw.groupby(group_cols)[agg_cols].agg(['mean', 'std']).reset_index()
     grouped.columns = ['_'.join(col).strip('_') if isinstance(col, tuple) else col for col in grouped.columns]
     grouped.to_csv(OUT / "metrics_summary_grouped.csv", index=False)
 
