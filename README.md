@@ -1,4 +1,4 @@
-# UAV Control via Cellular Automata (Master’s Project)
+# UAV Control via Cellular Automata (Master’s Project) 
 
 A research codebase exploring **Cellular Automata (CA)** for fixed-wing UAV longitudinal dynamics and control.  
 We embed a **PID controller** (with anti-windup) into CA update rules, model **actuator dynamics** (first-order lag, rate, saturation), inject **turbulence** using an Ornstein–Uhlenbeck (OU) process, and tune PID gains with a **Genetic Algorithm (GA)**. The framework runs disturbance/maneuver/failure scenarios and exports publication-ready **plots** and **tables**.
