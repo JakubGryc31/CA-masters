@@ -25,6 +25,7 @@ Classical control studies often depend on ODE/CFD pipelines—accurate but heavy
 
 ## Repository Structure
 
+```
 uav_ca_masters/
 ├─ src/
 │ ├─ ca/
@@ -53,7 +54,7 @@ uav_ca_masters/
 │ └─ test_metrics.py # minimal test of metrics keys
 ├─ requirements.txt
 └─ README.md # this file
-
+```
 
 ---
 
