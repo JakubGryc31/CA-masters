@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Optional: load .env locally (comment out if you don't want this behaviour)
+# Optional: load a local .env during dev
 try:
     from dotenv import load_dotenv  # pip install python-dotenv
     load_dotenv()
@@ -16,15 +16,19 @@ except Exception:
     pass
 
 # ---------- Config / Auth ----------
-USE_MI = os.getenv("USE_MI", "0") == "1"  # set to "1" if running in Azure with Managed Identity
+USE_MI = os.getenv("USE_MI", "0") == "1"  # set to "1" in Azure if using Managed Identity
 
-AZ_BLOB_URL = os.getenv("AZ_BLOB_URL", "https://castoragemasters.blob.core.windows.net")
+AZ_BLOB_URL = os.getenv("AZ_BLOB_URL", "https://<youraccount>.blob.core.windows.net")
 AZ_BLOB_CONTAINER = os.getenv("AZ_BLOB_CONTAINER", "output-simulation")
-AZ_BLOB_SAS = os.getenv("AZ_BLOB_SAS", None)  # token WITHOUT leading '?'
+AZ_BLOB_SAS = os.getenv("AZ_BLOB_SAS")  # token WITHOUT leading '?'
 
 LATEST_BLOB = os.getenv("LATEST_BLOB", "latest.txt")
 GROUPED_NAME = os.getenv("GROUPED_NAME", "metrics_summary_grouped.csv")
 RAW_NAME = os.getenv("RAW_NAME", "metrics_summary_raw.csv")
+
+st.set_page_config(page_title="UAV Control — Experiment Sweep Dashboard", layout="wide")
+st.title("UAV Control — Experiment Sweep Dashboard")
+st.caption("Means ± std over seeds; filters apply to all charts. Lower is better unless stated otherwise.")
 
 # ---------- Blob helpers ----------
 @st.cache_data(ttl=120)
@@ -64,17 +68,10 @@ def resolve_pointer() -> RunPointer:
                       grouped_blob=f"{ts}/{GROUPED_NAME}",
                       raw_blob=f"{ts}/{RAW_NAME}")
 
-# ---------- UI ----------
-st.set_page_config(page_title="UAV Control — Sweep Dashboard", layout="wide")
-st.title("UAV Control — Experiment Sweep Dashboard")
-
 with st.sidebar:
     st.header("Data source")
     st.caption("Pulls from Azure Blob Storage")
-    st.code(
-        f"URL: {AZ_BLOB_URL}\nContainer: {AZ_BLOB_CONTAINER}\nlatest.txt: {LATEST_BLOB}",
-        language="text",
-    )
+    st.code(f"URL: {AZ_BLOB_URL}\nContainer: {AZ_BLOB_CONTAINER}\nlatest.txt: {LATEST_BLOB}", language="text")
     st.caption(f"Auth: {'Managed Identity' if USE_MI else 'SAS token'}")
     st.markdown("---")
 
@@ -95,7 +92,7 @@ except Exception as e:
     st.error(f"Failed to read CSVs for run {ptr.ts}: {e}")
     st.stop()
 
-# Basic hygiene
+# hygiene
 for c in ["controller", "grid", "turbulence", "failure"]:
     if c in df_grp.columns:
         df_grp[c] = df_grp[c].astype(str)
@@ -112,40 +109,17 @@ with flt[3]:
     sel_fail = st.multiselect("Failure", sorted(df_grp["failure"].unique()), default=None)
 
 q = df_grp.copy()
-
-
-# Show sample sizes and recovery diagnostics
-if "n" in q.columns:
-    st.caption(f"Per-group sample size (n) — min: {int(q['n'].min())}, median: {int(q['n'].median())}, max: {int(q['n'].max())}")
-
-cols = st.columns(2)
-with cols[0]:
-    if "recovery_rate" in q.columns:
-        import plotly.express as px
-        fig = px.bar(q, x="controller", y="recovery_rate", color="controller",
-                     barmode="group", title="Recovery rate (fraction of episodes)")
-        fig.update_yaxes(tickformat=".0%", range=[0,1])
-        st.plotly_chart(fig, use_container_width=True)
-with cols[1]:
-    if "ttr_conditional_mean" in q.columns:
-        fig = px.bar(q, x="controller", y="ttr_conditional_mean", color="controller",
-                     barmode="group", title="Time-to-recover (conditional mean)")
-        st.plotly_chart(fig, use_container_width=True)
-
-# Compact table (top 50 rows of filtered grouped)
-show_cols = [c for c in ["controller","grid","turbulence","failure","n","overshoot_mean","time_to_recover_mean","crash_mean","control_effort_mean","recovery_rate","ttr_conditional_mean"] if c in q.columns]
-st.dataframe(q[show_cols].head(50))
-
-for name, sel in [
-    ("controller", sel_controller),
-    ("grid", sel_grid),
-    ("turbulence", sel_turb),
-    ("failure", sel_fail),
-]:
+for name, sel in [("controller", sel_controller), ("grid", sel_grid), ("turbulence", sel_turb), ("failure", sel_fail)]:
     if sel:
         q = q[q[name].isin(sel)]
 
-# Sample size
+# Extra % columns for nicer hovers
+if "crash_mean" in q:
+    q["crash_%"] = (q["crash_mean"].clip(0, 1) * 100).round(1)
+if "recovery_rate" in q:
+    q["recovery_%"] = (q["recovery_rate"].clip(0, 1) * 100).round(1)
+
+# Totals
 st.caption(f"Filtered groups: {len(q):,} rows • Raw rows: {len(df_raw):,} • Run: {ptr.ts}")
 
 # KPI row
@@ -158,92 +132,112 @@ def kpi(df, col, label, fmt=None, help_txt=None):
         st.metric(label, "–", help=help_txt)
 
 k = st.columns(4)
-with k[0]:
-    kpi(q, "overshoot_mean", "Overshoot (↓)")
-with k[1]:
-    kpi(q, "time_to_recover_mean", "Time to recover (↓)")
-with k[2]:
-    kpi(q, "crash_mean", "Crash rate (↓)", fmt=lambda v: f"{100*v:.1f}%")
-with k[3]:
-    kpi(q, "control_effort_mean", "Control effort (↓)")
+with k[0]: kpi(q, "overshoot_mean", "Overshoot (↓)")
+with k[1]: kpi(q, "time_to_recover_mean", "Time to recover (↓)")
+with k[2]: kpi(q, "crash_mean", "Crash rate (↓)", fmt=lambda v: f"{100*v:.1f}%")
+with k[3]: kpi(q, "control_effort_mean", "Control effort (↓)")
+
+# Recovery KPIs
+k2 = st.columns(2)
+with k2[0]:
+    if "recovery_rate" in q.columns and not q.empty:
+        st.metric("Recovery rate (↑)", f"{100*q['recovery_rate'].mean():.1f}%")
+    else:
+        st.metric("Recovery rate", "–")
+with k2[1]:
+    if "ttr_conditional_mean" in q.columns and not q.empty:
+        mask = q["ttr_conditional_mean"].notna()
+        val = q.loc[mask, "ttr_conditional_mean"].mean() if mask.any() else float("nan")
+        st.metric("TTR | recovered (↓)", f"{val:.1f}" if mask.any() else "–")
+    else:
+        st.metric("TTR | recovered", "–")
 
 st.divider()
 
 # ---------- Per-metric charts with error bars ----------
-def bar_with_err(df, y_col, y_label):
-    if y_col not in df.columns:
-        st.info(f"Column '{y_col}' not found.")
+def bar_with_err(df, y_col, y_label, *, pct=False, clamp=None):
+    """
+    df: grouped (already filtered)
+    y_col: '..._mean'
+    pct: show as percent
+    clamp: (lo, hi) axis range
+    """
+    if y_col not in df.columns or df.empty:
+        st.info(f"Column '{y_col}' not found or empty.")
         return
     err_col = y_col.replace("_mean", "_std")
     error_y = df[err_col] if err_col in df.columns else None
-    fig = px.bar(
-        df, x="controller", y=y_col, color="controller",
-        error_y=error_y, barmode="group",
-        title=y_label
-    )
-    if y_col == "crash_mean":
-        fig.update_yaxes(tickformat=".0%", range=[0, 1])
+    hover_cols = [c for c in ["controller","grid","turbulence","failure","n","recovery_%","crash_%","ttr_conditional_mean"]
+                  if c in df.columns]
+    fig = px.bar(df, x="controller", y=y_col, color="controller", error_y=error_y,
+                 barmode="group", hover_data=hover_cols, title=y_label)
+    if pct: fig.update_yaxes(tickformat=".0%")
+    if clamp: fig.update_yaxes(range=list(clamp))
+    fig.update_layout(showlegend=False, margin=dict(l=10,r=10,t=50,b=10))
     st.plotly_chart(fig, use_container_width=True)
 
 c1, c2 = st.columns(2)
-with c1: bar_with_err(q, "overshoot_mean", "Overshoot (lower is better)")
-with c2: bar_with_err(q, "time_to_recover_mean", "Time to recover (lower is better)")
+with c1:
+    bar_with_err(q, "overshoot_mean", "Overshoot (mean ± std, lower is better)", clamp=(0, 2))
+with c2:
+    ymax = float(q["time_to_recover_mean"].max()) if "time_to_recover_mean" in q and not q.empty else 0.0
+    bar_with_err(q, "time_to_recover_mean", "Time to recover (steps, mean ± std, lower is better)",
+                 clamp=(0, max(5.0, ymax * 1.1)))
 
 c3, c4 = st.columns(2)
-# format crash as percentage by temporarily scaling
 if "crash_mean" in q.columns:
     q_pct = q.copy()
     q_pct["crash_mean"] = q_pct["crash_mean"].clip(0, 1)
     with c3:
-        bar_with_err(q_pct, "crash_mean", "Crash rate (lower is better)")
-else:
-    with c3:
-        st.info("Column 'crash_mean' not found.")
+        bar_with_err(q_pct, "crash_mean", "Crash rate (fraction, mean ± std, lower is better)",
+                     pct=True, clamp=(0, 1))
+with c4:
+    bar_with_err(q, "control_effort_mean", "Control effort (|u|, mean ± std, lower is better)", clamp=(0, 2))
 
-with c4: bar_with_err(q, "control_effort_mean", "Control effort (lower is better)")
-
-st.divider()
-
-# Overshoot by grid (mean ± std), if available
-if {"grid", "controller", "overshoot_mean"}.issubset(q.columns):
-    st.subheader("Overshoot by grid")
-    err = "overshoot_std" if "overshoot_std" in q.columns else None
+st.subheader("Overshoot by grid")
+if {"grid","controller","overshoot_mean"}.issubset(q.columns):
     fig = px.bar(q, x="grid", y="overshoot_mean", color="controller", barmode="group",
-                 error_y=q[err] if err else None)
-    fig.update_layout(yaxis_title="Overshoot")
+                 error_y=q["overshoot_std"] if "overshoot_std" in q else None,
+                 hover_data=[c for c in ["controller","grid","turbulence","failure","n","recovery_%"] if c in q])
+    fig.update_layout(yaxis_title="Overshoot", margin=dict(l=10,r=10,t=50,b=10))
+    fig.update_yaxes(range=[0, 2])
     st.plotly_chart(fig, use_container_width=True)
 
-# Recovery time vs turbulence (line)
-if {"controller", "turbulence", "time_to_recover_mean"}.issubset(q.columns):
-    st.subheader("Recovery time vs. turbulence")
-    # try numeric sort if turbulence is numeric-like
-    try:
-        q2 = q.assign(_turb=pd.to_numeric(q["turbulence"]))
-    except Exception:
-        q2 = q.assign(_turb=q["turbulence"])
-    fig = px.line(q2.sort_values("_turb"), x="turbulence", y="time_to_recover_mean",
-                  color="controller", markers=True)
-    fig.update_layout(yaxis_title="Time to recover")
+# ---------- Pareto trade-off ----------
+st.subheader("Trade-off: Overshoot vs. Control Effort (Pareto view)")
+if {"overshoot_mean","control_effort_mean","controller"}.issubset(q.columns) and not q.empty:
+    qq = q.copy()
+    fig = px.scatter(
+        qq, x="overshoot_mean", y="control_effort_mean",
+        color="controller", symbol="grid",
+        facet_col="turbulence" if "turbulence" in qq.columns else None,
+        hover_data=[c for c in ["controller","grid","turbulence","failure","n","recovery_%","crash_%","ttr_conditional_mean"] if c in qq.columns],
+        title="Controllers closer to the lower-left corner are better (lower overshoot & lower effort)"
+    )
+    fig.update_xaxes(title="Overshoot", range=[0, 2])
+    fig.update_yaxes(title="Control effort (|u|)", range=[0, 2])
     st.plotly_chart(fig, use_container_width=True)
+
+# ---------- How to read these charts ----------
+with st.expander("How to read these charts"):
+    st.markdown("""
+- **Overshoot (↓)** — maximum positive tracking error (fraction of the step). Capped at 2.0 for readability.
+- **Time to recover (↓)** — steps until the error remains within a tight band (**hysteresis**) for several consecutive steps.
+- **Crash rate (↓)** — fraction of episodes that diverged or violated safety rails (sustained large error or actuator saturation).
+- **Control effort (↓)** — average absolute control |u|; lower means less aggressive actuation.
+- **Recovery rate / TTR | recovered** — how often recoveries occur and, conditional on recovery, how long it takes.
+- Error bars = **±1 std** across seeds (**n** in tooltip). Bars show **means** over current filters.
+- Pareto plot: points nearer the **lower-left** are preferable (low overshoot & low effort).
+""")
 
 # ---------- Downloads ----------
 st.subheader("Download current data")
 d1, d2 = st.columns(2)
 with d1:
-    st.download_button(
-        "Download grouped CSV (filtered view)",
-        data=q.to_csv(index=False).encode("utf-8"),
-        file_name=f"grouped_{ptr.ts}_filtered.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
+    st.download_button("Download grouped CSV (filtered view)", q.to_csv(index=False).encode("utf-8"),
+                       file_name=f"grouped_{ptr.ts}_filtered.csv", mime="text/csv", use_container_width=True)
 with d2:
-    st.download_button(
-        "Download raw CSV (full run)",
-        data=df_raw.to_csv(index=False).encode("utf-8"),
-        file_name=f"raw_{ptr.ts}.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
+    st.download_button("Download raw CSV (full run)", df_raw.to_csv(index=False).encode("utf-8"),
+                       file_name=f"raw_{ptr.ts}.csv", mime="text/csv", use_container_width=True)
 
 st.caption(f"Refreshed: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
