@@ -5,3 +5,5 @@ matplotlib
 pyyaml
 python-docx
 azure-storage-blob
+streamlit
+plotly
