@@ -97,6 +97,15 @@ for c in ["controller", "grid", "turbulence", "failure"]:
     if c in df_grp.columns:
         df_grp[c] = df_grp[c].astype(str)
 
+# === Add medians from raw into the grouped table (for richer hovers) ===
+group_keys = ["controller", "grid", "turbulence", "failure"]
+if all(k in df_raw.columns for k in ["overshoot", "control_effort", *group_keys]):
+    med = (df_raw.groupby(group_keys, dropna=False)
+                 .agg(overshoot_median=("overshoot", "median"),
+                      control_effort_median=("control_effort", "median"))
+                 .reset_index())
+    df_grp = df_grp.merge(med, on=group_keys, how="left")
+
 # Filters
 flt = st.columns(4)
 with flt[0]:
@@ -152,16 +161,15 @@ with k2[1]:
     else:
         st.metric("TTR | recovered", "–")
 
-st.divider()
-
-# Robust summaries for recovery (optional but clarifying)
+# Textual recovery context (optional but helpful)
 if {"recovery_rate","ttr_conditional_mean","n"}.issubset(q.columns) and not q.empty:
-    rec_n = int((q["recovery_rate"] * q["n"]).sum())  # total recovered episodes across groups
+    rec_n = int((q["recovery_rate"].fillna(0) * q["n"]).sum())
     st.caption(f"Recovered episodes across filtered groups: {rec_n:,}")
     if q["ttr_conditional_mean"].notna().any():
         med_ttr = float(q["ttr_conditional_mean"].median())
         st.caption(f"Median TTR | recovered: {med_ttr:.1f} steps")
 
+st.divider()
 
 # ---------- Per-metric charts with error bars ----------
 def bar_with_err(df, y_col, y_label, *, pct=False, clamp=None):
@@ -176,12 +184,26 @@ def bar_with_err(df, y_col, y_label, *, pct=False, clamp=None):
         return
     err_col = y_col.replace("_mean", "_std")
     error_y = df[err_col] if err_col in df.columns else None
-    hover_cols = [c for c in ["controller","grid","turbulence","failure","n","recovery_%","crash_%","ttr_conditional_mean"]
-                  if c in df.columns]
-    fig = px.bar(df, x="controller", y=y_col, color="controller", error_y=error_y,
-                 barmode="group", hover_data=hover_cols, title=y_label)
-    if pct: fig.update_yaxes(tickformat=".0%")
-    if clamp: fig.update_yaxes(range=list(clamp))
+
+    hover_cols = [c for c in [
+        "controller","grid","turbulence","failure","n",
+        "recovery_%","crash_%","ttr_conditional_mean",
+        "overshoot_median","control_effort_median"
+    ] if c in df.columns]
+
+    # consistent controller colors across figures
+    color_discrete_map = {"PID":"#1f77b4","LQR":"#2ca02c","MPC":"#d62728"}
+
+    fig = px.bar(
+        df, x="controller", y=y_col, color="controller",
+        error_y=error_y, barmode="group",
+        hover_data=hover_cols, title=y_label,
+        color_discrete_map=color_discrete_map
+    )
+    if pct:
+        fig.update_yaxes(tickformat=".0%")
+    if clamp:
+        fig.update_yaxes(range=list(clamp))
     fig.update_layout(showlegend=False, margin=dict(l=10,r=10,t=50,b=10))
     st.plotly_chart(fig, use_container_width=True)
 
@@ -190,8 +212,9 @@ with c1:
     bar_with_err(q, "overshoot_mean", "Overshoot (mean ± std, lower is better)", clamp=(0, 2))
 with c2:
     ymax = float(q["time_to_recover_mean"].max()) if "time_to_recover_mean" in q and not q.empty else 0.0
-    bar_with_err(q, "time_to_recover_mean", "Time to recover (steps, mean ± std, lower is better)",
-                 clamp=(0, max(5.0, ymax * 1.1)))
+    bar_with_err(q, "time_to_recover_mean",
+                 "Time to recover (steps, mean ± std, lower is better)",
+                 clamp=(0, min(250, max(5.0, ymax * 1.1))))  # clamp TTR to avoid flattening
 
 c3, c4 = st.columns(2)
 if "crash_mean" in q.columns:
@@ -205,23 +228,31 @@ with c4:
 
 st.subheader("Overshoot by grid")
 if {"grid","controller","overshoot_mean"}.issubset(q.columns):
+    color_discrete_map = {"PID":"#1f77b4","LQR":"#2ca02c","MPC":"#d62728"}
     fig = px.bar(q, x="grid", y="overshoot_mean", color="controller", barmode="group",
                  error_y=q["overshoot_std"] if "overshoot_std" in q else None,
-                 hover_data=[c for c in ["controller","grid","turbulence","failure","n","recovery_%"] if c in q])
+                 hover_data=[c for c in ["controller","grid","turbulence","failure","n","recovery_%"] if c in q],
+                 color_discrete_map=color_discrete_map)
     fig.update_layout(yaxis_title="Overshoot", margin=dict(l=10,r=10,t=50,b=10))
     fig.update_yaxes(range=[0, 2])
     st.plotly_chart(fig, use_container_width=True)
 
-# ---------- Pareto trade-off ----------
+# ---------- Pareto trade-off (small multiples: turbulence × failure) ----------
 st.subheader("Trade-off: Overshoot vs. Control Effort (Pareto view)")
 if {"overshoot_mean","control_effort_mean","controller"}.issubset(q.columns) and not q.empty:
-    qq = q.copy()
+    color_discrete_map = {"PID":"#1f77b4","LQR":"#2ca02c","MPC":"#d62728"}
     fig = px.scatter(
-        qq, x="overshoot_mean", y="control_effort_mean",
+        q, x="overshoot_mean", y="control_effort_mean",
         color="controller", symbol="grid",
-        facet_col="turbulence" if "turbulence" in qq.columns else None,
-        hover_data=[c for c in ["controller","grid","turbulence","failure","n","recovery_%","crash_%","ttr_conditional_mean"] if c in qq.columns],
-        title="Controllers closer to the lower-left corner are better (lower overshoot & lower effort)"
+        facet_row="failure" if "failure" in q.columns else None,
+        facet_col="turbulence" if "turbulence" in q.columns else None,
+        hover_data=[c for c in [
+            "controller","grid","turbulence","failure","n",
+            "recovery_%","crash_%","ttr_conditional_mean",
+            "overshoot_median","control_effort_median"
+        ] if c in q.columns],
+        title="Lower-left is better (low overshoot & low effort)",
+        color_discrete_map=color_discrete_map
     )
     fig.update_xaxes(title="Overshoot", range=[0, 2])
     fig.update_yaxes(title="Control effort (|u|)", range=[0, 2])

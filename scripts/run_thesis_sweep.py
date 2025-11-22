@@ -23,8 +23,7 @@ GRIDS = ["30x30", "40x40"]
 TURBULENCE = ["low", "high"]
 FAILURE = ["none", "sensor_bias", "actuator_sat"]
 
-# Controller profiles — clearer hierarchy:
-# Overshoot: PID > LQR > MPC; Effort: MPC ≥ LQR ≥ PID
+# Clear hierarchy: Overshoot  PID > LQR > MPC; Effort  MPC ≥ LQR ≥ PID
 CTRL_PROFILE = {
     "PID": {"base_overshoot": 0.030, "effort": 0.95},   # a bit sloppier, cheaper
     "LQR": {"base_overshoot": 0.018, "effort": 1.10},   # middle ground
@@ -33,23 +32,21 @@ CTRL_PROFILE = {
 
 GRID_FACTOR = {"30x30": 1.00, "40x40": 0.95}  # finer grid helps a bit
 
-# Environment stress (Nominal). For a "Stress+" robustness run, you can
-# set turbulence["high"]["sigma"] to 0.040 and tau to 0.20 before running.
+# Diverse-but-stable: slightly harder "high" cases, tighter actuator ceiling,
+# and a recovery detector that's a tad easier so the recovery panel has signal.
 STRESS = {
     "turbulence": {
         "low":  {"sigma": 0.012, "tau": 0.45},
-        "high": {"sigma": 0.035, "tau": 0.22},  # +15–20% vs v2 (stable but harder)
-        # Stress+ suggestion for robustness appendix:
-        # "high": {"sigma": 0.040, "tau": 0.20},
+        "high": {"sigma": 0.038, "tau": 0.22},  # was 0.035 — clearer separation
     },
     "failures": {
-        "sensor_bias_mag": 0.025,  # fraction of setpoint
-        "sat_limit": 0.55,         # actuator saturation
+        "sensor_bias_mag": 0.025,
+        "sat_limit": 0.50,                      # was 0.55 — more visible strain
     },
     "recovery": {
-        "threshold": 0.03,   # set to 0.025 and min_hold=6 if you want more recoveries
+        "threshold": 0.025,  # was 0.03
         "hysteresis": 0.015,
-        "min_hold": 8
+        "min_hold": 6        # was 8 — a bit easier to declare recovered
     }
 }
 
@@ -95,7 +92,7 @@ def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
     elif cfg.failure == "actuator_sat":
         sat = STRESS["failures"]["sat_limit"]
 
-    # Controller gains (milder; separation driven by profiles)
+    # Controller gains (mild; separation driven by profiles)
     k_p = 1.2 * base_effort
     k_d = 0.3 * base_effort
 
@@ -104,12 +101,12 @@ def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
     COUPLE   = 0.08
     ACTUATE  = -0.08
 
-    MAX_ABS_ERR = 2.0      # absolute clamp per step (keeps values finite)
-    DIVERGE_LIM = 1.4      # was 1.5 — slightly stricter for a few hard crashes
-    DIVERGE_HOLD = 45      # was 50 — "sustained" large error window
+    MAX_ABS_ERR = 2.0      # clamp per step to avoid numeric blow-ups
+    DIVERGE_LIM = 1.40     # slightly stricter to let a few hard cases crash
+    DIVERGE_HOLD = 45
     diverge_count = 0
 
-    # small actuation dead-zone — introduces realistic stiction; hurts PID > LQR > MPC
+    # tiny actuation dead-zone — introduces realistic stiction; hurts PID > LQR > MPC
     DEADZONE = 0.03
 
     e_prev = 0.0
@@ -128,7 +125,6 @@ def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
         e_next = CONTRACT * e_prev_state + COUPLE * e_meas + 0.03 * noise[t] + 0.03 * rng.normal()
         e_next += ACTUATE * u_t
 
-        # Clamp to avoid numeric blow-ups
         e_next = float(np.clip(e_next, -MAX_ABS_ERR, MAX_ABS_ERR))
         error[t] = e_next
         e_prev = e_meas
@@ -137,7 +133,6 @@ def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
         if abs(e_next) > DIVERGE_LIM:
             diverge_count += 1
             if diverge_count >= DIVERGE_HOLD:
-                # truncate episode; rest stays zeros
                 error[t+1:] = 0.0
                 u[t+1:] = 0.0
                 break
@@ -145,28 +140,23 @@ def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
             diverge_count = 0
 
     # -------- Metrics (bounded & robust) --------
-    overshoot = float(np.maximum(0.0, error.max()))
-    overshoot = float(min(overshoot, 2.0))  # cap at 200% to avoid outliers dominating
+    overshoot = float(min(max(0.0, error.max()), 2.0))  # cap 200%
 
-    rec_cfg = STRESS["recovery"]
-    crossed = np.abs(error) > rec_cfg["threshold"]
+    rec = STRESS["recovery"]
     time_to_recover = 0.0
-    if crossed.any():
+    if (np.abs(error) > rec["threshold"]).any():
         for t in range(len(error)):
-            window_ok = (t + rec_cfg["min_hold"] <= len(error)) and np.all(
-                np.abs(error[t : t + rec_cfg["min_hold"]]) < rec_cfg["hysteresis"]
-            )
-            if window_ok:
+            ok = (t + rec["min_hold"] <= len(error)) and np.all(
+                np.abs(error[t:t+rec["min_hold"]]) < rec["hysteresis"])
+            if ok:
                 time_to_recover = float(t)
                 break
 
-    # Crash proxy: sustained error OR actuator banging at limit frequently
+    # Crash proxy: sustained error or frequent actuator saturation
     sat_hits = float((np.abs(u) >= (sat if sat is not None else 10)).mean()) if len(u) else 0.0
     crash = 1.0 if (diverge_count >= DIVERGE_HOLD or np.abs(error).mean() > 0.35 or sat_hits > 0.25) else 0.0
 
-    # Control effort — average |u|, clipped
-    control_effort = float(np.mean(np.abs(u)))
-    control_effort = float(min(control_effort, 2.0))
+    control_effort = float(min(np.mean(np.abs(u)), 2.0))
 
     return ({
         "controller": cfg.controller,
@@ -222,7 +212,6 @@ def main():
                         if n_done % 25 == 0 or n_done == total:
                             print(f"{n_done}/{total} runs...", flush=True)
 
-    # raw CSV
     raw_df = pd.DataFrame(rows)
     raw_df.to_csv(raw_path, index=False)
 
@@ -245,7 +234,7 @@ def main():
          .reset_index())
 
     g["recovery_rate"] = g["recovery_count"] / g["n"]
-    # conditional mean time-to-recover
+    # Conditional mean time-to-recover
     cond = (raw_df[raw_df["time_to_recover"].fillna(0) > 0]
             .groupby(grp_cols)["time_to_recover"]
             .mean()
