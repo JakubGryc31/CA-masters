@@ -154,6 +154,15 @@ with k2[1]:
 
 st.divider()
 
+# Robust summaries for recovery (optional but clarifying)
+if {"recovery_rate","ttr_conditional_mean","n"}.issubset(q.columns) and not q.empty:
+    rec_n = int((q["recovery_rate"] * q["n"]).sum())  # total recovered episodes across groups
+    st.caption(f"Recovered episodes across filtered groups: {rec_n:,}")
+    if q["ttr_conditional_mean"].notna().any():
+        med_ttr = float(q["ttr_conditional_mean"].median())
+        st.caption(f"Median TTR | recovered: {med_ttr:.1f} steps")
+
+
 # ---------- Per-metric charts with error bars ----------
 def bar_with_err(df, y_col, y_label, *, pct=False, clamp=None):
     """
