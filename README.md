@@ -1,103 +1,153 @@
-# UAV Control via Cellular Automata (Master’s Project) 
+# CA-masters — UAV Control Experiments & Azure Dashboard
 
-A research codebase exploring **Cellular Automata (CA)** for fixed-wing UAV longitudinal dynamics and control.  
-We embed a **PID controller** (with anti-windup) into CA update rules, model **actuator dynamics** (first-order lag, rate, saturation), inject **turbulence** using an Ornstein–Uhlenbeck (OU) process, and tune PID gains with a **Genetic Algorithm (GA)**. The framework runs disturbance/maneuver/failure scenarios and exports publication-ready **plots** and **tables**.
+**One-line**: Reproducible UAV control experiments (PID/LQR/MPC) with an Azure Container Apps sweep pipeline and a Streamlit dashboard that pulls results directly from Azure Blob Storage.
 
----
-
-## Why CA?
-Classical control studies often depend on ODE/CFD pipelines—accurate but heavy. A CA model trades fine-grained aerodynamics for a **lightweight, discrete environment** that still exhibits **emergent, qualitative behaviors** (e.g., damped recovery after a pitch-up). This lets you iterate on controller ideas and robustness testing **quickly**, then decide which hypotheses merit higher-fidelity simulations.
+**Final run (frozen for thesis)**: `20251122-2019`  
+**Scope**: 36 groups × 25 seeds = **900 episodes**  
+**Headline KPIs (overall)**: Overshoot **0.877**, Time-to-recover **86.631** steps, Crash **0.0%**, Effort **0.103**, Recovery rate **32.0%**, TTR | recovered **267.1** (median ~270.6).
 
 ---
 
-## Features
-- **CA state**: attitude `a`, stability `s`, speed `v`; local diffusion + control coupling.
-- **Turbulence**: OU process with adjustable intensity schedule.
-- **Actuator**: first-order lag + rate limit + saturation.
-- **PID**: anti-windup; failure-window toggles for robustness tests.
-- **GA tuner**: elitism, tournament selection, crossover, multiplicative mutation (log-space friendly).
-- **Experiments**: pitch-up maneuvers, turbulence blocks, controller failure windows.
-- **Metrics**: overshoot, time-to-recover, stability variance, control effort, crash flag.
-- **Artifacts**: CSVs + PNGs for direct use in theses/papers.
-- **Modular**: easy to extend (add metrics, controllers, or scenarios).
+## Contents
+
+- [Overview](#overview)
+- [Repo structure](#repo-structure)
+- [Quick start (local)](#quick-start-local)
+- [Generate data locally](#generate-data-locally)
+- [Cloud pipeline (Azure Container Apps Job)](#cloud-pipeline-azure-container-apps-job)
+- [Dashboard](#dashboard)
+- [Reproducibility & “frozen run”](#reproducibility--frozen-run)
+- [Diagrams](#diagrams)
+- [Results snapshot](#results-snapshot)
+- [Cite & License](#cite--license)
 
 ---
 
-## Repository Structure
+## Overview
+
+This project simulates a simplified UAV tracking task with three controllers (PID, LQR, MPC) across different grids, turbulence levels, and failure modes.  
+A batch sweep writes two CSVs:
+
+- `metrics_summary_raw.csv` — all episodes
+- `metrics_summary_grouped.csv` — means/std per (controller, grid, turbulence, failure)
+
+A Streamlit dashboard reads the latest run from Azure Blob Storage and renders KPI bars + a Pareto view (overshoot vs effort).
+
+---
+
+## Repo structure
 
 ```
-uav_ca_masters/
-├─ src/
-│ ├─ ca/
-│ │ ├─ grid.py # CA grid/state (a, s, v) + neighbors
-│ │ └─ update.py # CA update rules + crash condition
-│ ├─ dynamics/
-│ │ ├─ actuator.py # first-order actuator w/ rate & saturation
-│ │ └─ noise.py # OU turbulence process
-│ ├─ control/
-│ │ └─ pid.py # PID with anti-windup
-│ ├─ opt/
-│ │ └─ ga.py # genetic algorithm (elitism + tournaments)
-│ ├─ experiments/
-│ │ ├─ sim.py # scenario runner
-│ │ └─ scenarios.py # turbulence/maneuver helpers
-│ └─ analysis/
-│ ├─ metrics.py # compute metrics; returns scalars + timeseries
-│ └─ plots.py # matplotlib plots (timeseries & GA history)
-├─ scripts/
-│ ├─ run_demo.py # quick baseline vs "GA" candidate; exports plots/CSVs
-│ └─ run_ga_search.py # GA tuner (edit pop/gens; extend as needed)
-├─ outputs/ # generated CSVs & figures
-├─ configs/
-│ └─ default.yaml # example config for long runs
-├─ tests/
-│ └─ test_metrics.py # minimal test of metrics keys
+CA-masters/
+├─ dashboard/ # Streamlit app
+│ └─ streamlit_app.py
+├─ scripts/ # Experiment & upload
+│ ├─ run_thesis_sweep.py
+│ └─ run_sweep_and_upload.py
+├─ docs/ # Diagrams & final PDF report assets
+│ ├─ architecture.drawio
+│ ├─ workflow.drawio
+│ └─ UAV Control v6 final — Experiment Sweep Dashboard.pdf
 ├─ requirements.txt
-└─ README.md # this file
+├─ Dockerfile
+├─ .env.sample # copy to .env and fill
+├─ .gitignore
+├─ LICENSE
+└─ CITATION.cff
 ```
 
----
+## Quick start (local)
 
-## Quickstart (Windows/PowerShell)
-
-From the project root (folder containing `src` and `scripts`):
-
-```pwsh
+# Create & activate virtual env
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
 
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
+cp .env.sample .env   # set AZ_* if you want dashboard to read from Azure
+
+## Generate data locally 
+
+```
+python scripts/run_thesis_sweep.py --T 600 --outdir outputs/thesis_artifacts --seeds 25
+```
+# Outputs:
+
+- outputs/thesis_artifacts/metrics_summary_raw.csv
+- outputs/thesis_artifacts/metrics_summary_grouped.csv
+- outputs/thesis_artifacts/timeseries_samples/…
+
+## Cloud pipeline (Azure Container Apps Job)
+
+Idea: Build & push the Docker image to ACR, then run a Container Apps Job that executes the sweep and uploads results to Azure Blob Storage. The job also writes latest.txt with the new run folder name (YYYYMMDD-HHMM/).
+
+# Required configuration (as secrets/variables on the job):
+
+- AZ_BLOB_URL — e.g. https://<account>.blob.core.windows.net
+- AZ_BLOB_CONTAINER — e.g. output-simulation
+- AZ_BLOB_SAS — SAS token without the leading
+
+# Command / Args in job:
+
+- Command: python
+- Args: scripts/run_sweep_and_upload.py --T 600 --outdir outputs/thesis_artifacts
+
+## Dahboard
+
+The Streamlit app loads the pointer in latest.txt, then fetches both grouped & raw CSVs.
+
+Run locally:
+```
+streamlit run dashboard/streamlit_app.py
 ```
 
-# If you run scripts directly, ensure they can import src/
-# Option A: run as module
-python -m scripts.run_demo
-# Option B: or run script after adding this to top of scripts/run_demo.py:
-# import os, sys; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-# Then:
-``` python .\scripts\run_demo.py ```
+# Environment variables:
 
-Artifacts appear in outputs/:
-- CSVs: timeseries_baseline.csv, timeseries_ga.csv, metrics_summary.csv
-- Plots: baseline_*.png, ga_*.png (attitude, stability, cmd/effort)
+- AZ_BLOB_URL, AZ_BLOB_CONTAINER, and either AZ_BLOB_SAS or USE_MI=1
 
-## Reproducible Runs
+# Optional:
 
-Set seed in scripts/run_demo.py and GA search scripts.
-Keep every table in CSV (do not hand-edit tables in Word).
-Use consistent figure sizes/labels; re-generate on any change.
+- TARGET_OVERSHOOT (default 0.10)
+- TARGET_EFFORT (default 0.50)
+- LATEST_BLOB (default latest.txt), GROUPED_NAME, RAW_NAME
 
-## Running GA Tuning
+# Features:
 
-Open scripts/run_ga_search.py and edit:
+- KPI bars (means ± std) with fixed controller order (PID → LQR → MPC)
+- Dotted reference lines for overshoot / effort
+- TTR axis clamp for readability
+- Pareto small-multiples (columns: turbulence; rows appear for failure when multiple are selected)
+- PNG and CSV download buttons
+- Run badge showing run id, total groups, and total episodes
 
-``` best, hist = ga_optimize(eval_fn, pop_size=30, gens=30, seed=11) ```
+## Reproducibility (frozen run)
 
+For the thesis we freeze results at:
 
-Then run:
+- Run ID: 20251122-2019
+- Folder in storage: 20251122-2019/ containing:
+- metrics_summary_grouped.csv
+- metrics_summary_raw.csv
+- timeseries_samples/
 
-``` python -m scripts.run_ga_search ```
+Keep latest.txt pointing to that folder, or record this run id in the thesis text to lock figures to a specific dataset.
 
-This writes outputs/ga_history.csv and prints best (Kp, Ki, Kd); re-evaluate the winner on multiple seeds using experiments/sim.py + analysis/metrics.py, summarize with mean ± std.
+## Results snapshot (frozen run)
+
+- 36×25 = 900 episodes (run 20251122-2019)
+- Overshoot 0.877
+- Time-to-recover 86.631 steps
+- Crash 0.0%
+- Effort 0.103
+- Recovery rate 32.0%
+- TTR | recovered 267.1 (median ~270.6)
+
+# Qualitative pattern (consistent across conditions):
+
+- MPC → lowest overshoot, highest effort
+- PID → highest overshoot, lowest effort
+- LQR → middle on both metrics
+- Harder conditions (high turbulence + failures) increase TTR and reduce Pareto efficiency; hierarchy persists.
 
