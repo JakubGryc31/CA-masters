@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Run a parameter sweep over (controller, grid, turbulence, failure) and
-emit:
+Run a parameter sweep over (controller, grid, turbulence, failure) and emit:
   - metrics_summary_raw.csv           (one row per episode)
   - metrics_summary_grouped.csv       (means/stds by group + n/recovery metrics)
   - timeseries_samples/               (a few illustrative time series)
 
-CLI:
+Example:
   python scripts/run_thesis_sweep.py --T 600 --outdir outputs/thesis_artifacts --seeds 25 --seed-offset 0
 """
 
@@ -20,7 +19,6 @@ import math
 import numpy as np
 import pandas as pd
 
-
 # ------------------------- factors / knobs -------------------------
 
 CONTROLLERS = ["PID", "LQR", "MPC"]
@@ -28,33 +26,30 @@ GRIDS = ["30x30", "40x40"]
 TURBULENCE = ["low", "high"]
 FAILURE = ["none", "sensor_bias", "actuator_sat"]
 
-# Stress knobs (tune these to “bite” a little so crash/recovery aren’t trivial zeros)
+# Gentler stress (still produces variation, avoids numeric blow-ups)
 STRESS = {
     "turbulence": {
-        "low":  {"sigma": 0.02, "tau": 0.30},
-        "high": {"sigma": 0.06, "tau": 0.15},
+        "low":  {"sigma": 0.01, "tau": 0.40},   # softer noise
+        "high": {"sigma": 0.03, "tau": 0.20},   # stronger but stable
     },
     "failures": {
-        "sensor_bias_mag": 0.04,     # constant bias magnitude (fraction of setpoint)
-        "sat_limit": 0.75,           # actuator saturation fraction
+        "sensor_bias_mag": 0.02,  # fraction of setpoint
+        "sat_limit": 0.60,        # actuator saturation
     },
     "recovery": {
-        "threshold": 0.03,           # trigger when |error| > 3%
-        "hysteresis": 0.015,         # settle below this to mark recovered
-        "min_hold": 8                # consecutive steps below hysteresis to accept recovery
+        "threshold": 0.03,        # trigger when |error| > 3%
+        "hysteresis": 0.015,      # consider recovered below this
+        "min_hold": 8             # consecutive steps to accept recovery
     }
 }
 
-# Controller “style” parameters (lower means better nominal tracking;
-# higher effort usually correlates with lower overshoot for the same disturbance)
+# Controller style parameters (relative tendencies)
 CTRL_PROFILE = {
     "PID": {"base_overshoot": 0.020, "effort": 1.00},
     "LQR": {"base_overshoot": 0.015, "effort": 1.15},
     "MPC": {"base_overshoot": 0.010, "effort": 1.30},
 }
-
-GRID_FACTOR = {"30x30": 1.00, "40x40": 0.95}  # coarser/finer grid effect
-
+GRID_FACTOR = {"30x30": 1.00, "40x40": 0.95}  # finer grid helps a bit
 
 # ------------------------- simulation core -------------------------
 
@@ -67,7 +62,6 @@ class EpisodeConfig:
     T: int
     seed: int
 
-
 def ou_process(rng: np.random.Generator, T: int, sigma: float, tau: float) -> np.ndarray:
     """Simple Ornstein–Uhlenbeck noise."""
     x = np.zeros(T)
@@ -75,7 +69,6 @@ def ou_process(rng: np.random.Generator, T: int, sigma: float, tau: float) -> np
     for t in range(1, T):
         x[t] = alpha * x[t - 1] + sigma * rng.normal()
     return x
-
 
 def run_episode(cfg: EpisodeConfig) -> dict:
     rng = np.random.default_rng(cfg.seed)
@@ -90,14 +83,10 @@ def run_episode(cfg: EpisodeConfig) -> dict:
     tau = STRESS["turbulence"][cfg.turbulence]["tau"]
     noise = ou_process(rng, cfg.T, sigma=sig, tau=tau)
 
-    # Episode dynamics (toy):
-    # - command step = 1.0
-    # - error_t tries to follow 0 with controller aggressiveness implied by base_effort
-    # - turbulence pushes state; failures make it harder to settle
     error = np.zeros(cfg.T)
     u = np.zeros(cfg.T)
 
-    # failure modifiers
+    # Failure modifiers
     bias = 0.0
     sat = None
     if cfg.failure == "sensor_bias":
@@ -105,34 +94,59 @@ def run_episode(cfg: EpisodeConfig) -> dict:
     elif cfg.failure == "actuator_sat":
         sat = STRESS["failures"]["sat_limit"]
 
-    # Simulate
-    k_p = 2.2 * base_effort
-    k_d = 0.5 * base_effort
+    # Controller gains (milder)
+    k_p = 1.2 * base_effort
+    k_d = 0.3 * base_effort
+
+    # Stable dynamics + safety rails
+    CONTRACT = 0.70
+    COUPLE   = 0.08
+    ACTUATE  = -0.08
+
+    MAX_ABS_ERR = 2.0     # absolute clamp per step (keeps values finite)
+    DIVERGE_LIM = 1.5     # if |error| > this for DIVERGE_HOLD steps -> crash
+    DIVERGE_HOLD = 50
+
+    diverge_count = 0
     e_prev = 0.0
 
     for t in range(cfg.T):
-        e_meas = error[t - 1] + bias if t > 0 else 1.0 + bias  # step start at 1.0
+        e_meas = error[t - 1] + bias if t > 0 else 1.0 + bias  # step starts at 1.0
         de = e_meas - e_prev
+
         u_t = -k_p * e_meas - k_d * de
         if sat is not None:
             u_t = np.clip(u_t, -sat, sat)
         u[t] = u_t
-        # next error dynamics: contract + noise + actuation
-        e_next = 0.85 * (error[t - 1] if t > 0 else 1.0) + 0.05 * noise[t] + 0.15 * e_meas + 0.07 * rng.normal()
-        e_next += -0.10 * u_t  # actuation helps reduce error
+
+        e_prev_state = (error[t - 1] if t > 0 else 1.0)
+        e_next = CONTRACT * e_prev_state + COUPLE * e_meas + 0.03 * noise[t] + 0.03 * rng.normal()
+        e_next += ACTUATE * u_t
+
+        # Clamp to avoid numeric blow-ups
+        e_next = float(np.clip(e_next, -MAX_ABS_ERR, MAX_ABS_ERR))
         error[t] = e_next
         e_prev = e_meas
 
-    # Metrics
-    overshoot = float(np.maximum(0.0, error.max()))
-    control_effort = float(np.mean(np.abs(u)))
+        # divergence detector
+        if abs(e_next) > DIVERGE_LIM:
+            diverge_count += 1
+            if diverge_count >= DIVERGE_HOLD:
+                # truncate episode; rest stays zeros
+                error[t+1:] = 0.0
+                u[t+1:] = 0.0
+                break
+        else:
+            diverge_count = 0
 
-    # Recovery detection
+    # -------- Metrics (bounded & robust) --------
+    overshoot = float(np.maximum(0.0, error.max()))
+    overshoot = float(min(overshoot, 2.0))  # cap at 200% to avoid outliers dominating
+
     rec_cfg = STRESS["recovery"]
     crossed = np.abs(error) > rec_cfg["threshold"]
     time_to_recover = 0.0
     if crossed.any():
-        # First time we go back under hysteresis and *stay* for min_hold steps
         for t in range(len(error)):
             window_ok = (t + rec_cfg["min_hold"] <= len(error)) and np.all(
                 np.abs(error[t : t + rec_cfg["min_hold"]]) < rec_cfg["hysteresis"]
@@ -141,8 +155,11 @@ def run_episode(cfg: EpisodeConfig) -> dict:
                 time_to_recover = float(t)
                 break
 
-    # Crash proxy: sustained error AND saturated actuator (if any) or huge effort
-    crash = 1.0 if (np.abs(error).mean() > 0.25 and (sat is not None or np.abs(u).max() > 1.2)) else 0.0
+    sat_hits = float((np.abs(u) >= (sat if sat is not None else 10)).mean()) if len(u) else 0.0
+    crash = 1.0 if (diverge_count >= DIVERGE_HOLD or np.abs(error).mean() > 0.35 or sat_hits > 0.25) else 0.0
+
+    control_effort = float(np.mean(np.abs(u)))
+    control_effort = float(min(control_effort, 2.0))
 
     return {
         "controller": cfg.controller,
@@ -150,27 +167,22 @@ def run_episode(cfg: EpisodeConfig) -> dict:
         "turbulence": cfg.turbulence,
         "failure": cfg.failure,
         "seed": cfg.seed,
-        "overshoot": overshoot,                     # absolute (≈ fraction of setpoint)
-        "time_to_recover": time_to_recover,         # steps (0.0 if never recovered)
-        "crash": crash,                             # 0/1
-        "control_effort": control_effort,           # |u| mean
+        "overshoot": overshoot,
+        "time_to_recover": time_to_recover,
+        "crash": crash,
+        "control_effort": control_effort,
     }, error, u
-
 
 # ------------------------- I/O helpers -------------------------
 
-def write_timeseries_sample(root: Path, cfg: EpisodeConfig, err: np.ndarray, u: np.ndarray, limit: int = 3):
-    """
-    Save a few tiny samples for the first couple of seeds per group.
-    """
-    # keep it small: only write for seed 0..limit-1 (relative to offset)
-    if (cfg.seed % 1000) >= limit:  # heuristic safeguard
+def write_timeseries_sample(root: Path, cfg: EpisodeConfig, err: np.ndarray, u: np.ndarray, limit: int = 2):
+    """Save a few tiny samples for the first couple of seeds per group."""
+    if (cfg.seed % 1000) >= limit:  # heuristic: keep samples light
         return
     d = root / "timeseries_samples" / f"{cfg.controller}_{cfg.grid}_{cfg.turbulence}_{cfg.failure}"
     d.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame({"t": np.arange(len(err)), "error": err, "u": u})
     df.to_csv(d / f"seed_{cfg.seed}.csv", index=False)
-
 
 # ------------------------- main sweep -------------------------
 
@@ -189,6 +201,7 @@ def main():
 
     rows = []
     # sweep factors
+    total = len(CONTROLLERS) * len(GRIDS) * len(TURBULENCE) * len(FAILURE) * args.seeds
     for c in CONTROLLERS:
         for g in GRIDS:
             for tb in TURBULENCE:
@@ -196,14 +209,11 @@ def main():
                     for k in range(args.seeds):
                         seed = args.seed_offset + k
                         cfg = EpisodeConfig(c, g, tb, f, args.T, seed)
-                        row, e, u = run_episode(cfg)
+                        row, e, uu = run_episode(cfg)
                         rows.append(row)
-                        # write a couple of miniature time-series per group
-                        write_timeseries_sample(outdir, cfg, np.asarray(e), np.asarray(u), limit=2)
+                        write_timeseries_sample(outdir, cfg, np.asarray(e), np.asarray(uu), limit=2)
 
-                        # progress logs (roughly every 25 episodes)
                         n_done = len(rows)
-                        total = len(CONTROLLERS) * len(GRIDS) * len(TURBULENCE) * len(FAILURE) * args.seeds
                         if n_done % 25 == 0 or n_done == total:
                             print(f"{n_done}/{total} runs...", flush=True)
 
@@ -239,13 +249,11 @@ def main():
 
     g.to_csv(grp_path, index=False)
 
-    # friendly summary (matches your earlier logs)
     print("Done. Wrote:\n"
           f"- {raw_path}\n"
           f"- {grp_path}\n"
           f"- samples in {outdir / 'timeseries_samples'}",
           flush=True)
-
 
 if __name__ == "__main__":
     try:
