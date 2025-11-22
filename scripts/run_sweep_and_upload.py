@@ -13,12 +13,12 @@ def run_sweep(pass_through_args):
 
 def upload_artifacts(outdir: str):
     # env vars MUST be set in the Container Apps Job
-    AZ_BLOB_URL = os.getenv("AZ_BLOB_URL")
-    AZ_BLOB_SAS = os.getenv("AZ_BLOB_SAS")
-    AZ_BLOB_CONTAINER = os.getenv("AZ_BLOB_CONTAINER", "thesis-artifacts")
+    az-blob-url = os.getenv("az-blob-url")
+    az-blob-sas = os.getenv("az-blob-sas")
+    az-blob-container = os.getenv("az-blob-container", "thesis-artifacts")
 
-    if not (AZ_BLOB_URL and AZ_BLOB_SAS):
-        print("[runner] Skipping upload: AZ_BLOB_URL or AZ_BLOB_SAS not set.")
+    if not (az-blob-url and az-blob-sas):
+        print("[runner] Skipping upload: az-blob-url or az-blob-sas not set.")
         return
 
     try:
@@ -33,9 +33,9 @@ def upload_artifacts(outdir: str):
         sys.exit(1)
 
     ts = time.strftime("%Y%m%d-%H%M")
-    print(f"[runner] Uploading {root} to {AZ_BLOB_URL}/{AZ_BLOB_CONTAINER}/{ts}/")
-    svc = BlobServiceClient(account_url=AZ_BLOB_URL, credential=AZ_BLOB_SAS)
-    cc = svc.get_container_client(AZ_BLOB_CONTAINER)
+    print(f"[runner] Uploading {root} to {az-blob-url}/{az-blob-container}/{ts}/")
+    svc = BlobServiceClient(account_url=az-blob-url, credential=az-blob-sas)
+    cc = svc.get_container_client(az-blob-container)
     try:
         cc.create_container()
     except Exception:

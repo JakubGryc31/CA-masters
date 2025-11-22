@@ -131,18 +131,18 @@ def main():
 import os, time
 from pathlib import Path
 
-AZ_BLOB_URL = os.getenv("AZ_BLOB_URL")  # e.g. https://<account>.blob.core.windows.net
-AZ_BLOB_SAS = os.getenv("AZ_BLOB_SAS")  # SAS token without leading '?'
-AZ_BLOB_CONTAINER = os.getenv("AZ_BLOB_CONTAINER", "thesis-artifacts")
+az-blob-url = os.getenv("az-blob-url")  # e.g. https://<account>.blob.core.windows.net
+az-blob-sas = os.getenv("az-blob-sas")  # SAS token without leading '?'
+az-blob-container = os.getenv("az-blob-container", "thesis-artifacts")
 
-if AZ_BLOB_URL and AZ_BLOB_SAS:
+if az-blob-url and az-blob-sas:
     try:
         from azure.storage.blob import BlobServiceClient
         ts = time.strftime("%Y%m%d-%H%M")
         root = Path(args.outdir)
 
-        svc = BlobServiceClient(account_url=AZ_BLOB_URL, credential=AZ_BLOB_SAS)
-        cc = svc.get_container_client(AZ_BLOB_CONTAINER)
+        svc = BlobServiceClient(account_url=az-blob-url, credential=az-blob-sas)
+        cc = svc.get_container_client(az-blob-container)
         try:
             cc.create_container()
         except Exception:
@@ -157,7 +157,7 @@ if AZ_BLOB_URL and AZ_BLOB_SAS:
 
         # write or update 'latest.txt' pointer
         cc.upload_blob(name="latest.txt", data=f"{ts}".encode("utf-8"), overwrite=True)
-        print(f"Uploaded artifacts to {AZ_BLOB_URL}/{AZ_BLOB_CONTAINER}/{ts} and updated latest.txt")
+        print(f"Uploaded artifacts to {az-blob-url}/{az-blob-container}/{ts} and updated latest.txt")
     except Exception as ex:
         print("Blob upload skipped or failed:", ex)
 
