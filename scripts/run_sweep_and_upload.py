@@ -13,12 +13,12 @@ def run_sweep(pass_through_args):
         sys.exit(res.returncode)
 
 def upload_artifacts(outdir: str):
-    az-blob-url = os.getenv("az-blob-url")
-    az-blob-sas = os.getenv("az-blob-sas")
-    az-blob-container = os.getenv("az-blob-container", "thesis-artifacts")
+    AZ_BLOB_URL = os.getenv("AZ_BLOB_URL")
+    AZ_BLOB_SAS = os.getenv("AZ_BLOB_SAS")
+    AZ_BLOB_CONTAINER = os.getenv("AZ_BLOB_CONTAINER", "thesis-artifacts")
 
-    if not az-blob-url or not az-blob-sas:
-        log("Skipping upload: az-blob-url or az-blob-sas not set.")
+    if not AZ_BLOB_URL or not AZ_BLOB_SAS:
+        log("Skipping upload: AZ_BLOB_URL or AZ_BLOB_SAS not set.")
         return
 
     try:
@@ -33,9 +33,9 @@ def upload_artifacts(outdir: str):
         sys.exit(1)
 
     ts = time.strftime("%Y%m%d-%H%M")
-    log(f"Uploading from {root} to {az-blob-url}/{az-blob-container}/{ts}/")
-    svc = BlobServiceClient(account_url=az-blob-url, credential=az-blob-sas)
-    cc = svc.get_container_client(az-blob-container)
+    log(f"Uploading from {root} to {AZ_BLOB_URL}/{AZ_BLOB_CONTAINER}/{ts}/")
+    svc = BlobServiceClient(account_url=AZ_BLOB_URL, credential=AZ_BLOB_SAS)
+    cc = svc.get_container_client(AZ_BLOB_CONTAINER)
     try:
         cc.create_container()
     except Exception:
@@ -62,7 +62,7 @@ def main():
     log(f"Args: {args}")
     log(f"Resolved outdir: {outdir}")
     # print a redacted view of env presence (not values)
-    for k in ("az-blob-url","az-blob-container","az-blob-sas"):
+    for k in ("AZ_BLOB_URL","AZ_BLOB_CONTAINER","AZ_BLOB_SAS"):
         v = os.getenv(k)
         log(f"ENV {k}: {'set' if v else 'MISSING'}")
     run_sweep(args)
