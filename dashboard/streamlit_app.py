@@ -112,6 +112,30 @@ with flt[3]:
     sel_fail = st.multiselect("Failure", sorted(df_grp["failure"].unique()), default=None)
 
 q = df_grp.copy()
+
+
+# Show sample sizes and recovery diagnostics
+if "n" in q.columns:
+    st.caption(f"Per-group sample size (n) — min: {int(q['n'].min())}, median: {int(q['n'].median())}, max: {int(q['n'].max())}")
+
+cols = st.columns(2)
+with cols[0]:
+    if "recovery_rate" in q.columns:
+        import plotly.express as px
+        fig = px.bar(q, x="controller", y="recovery_rate", color="controller",
+                     barmode="group", title="Recovery rate (fraction of episodes)")
+        fig.update_yaxes(tickformat=".0%", range=[0,1])
+        st.plotly_chart(fig, use_container_width=True)
+with cols[1]:
+    if "ttr_conditional_mean" in q.columns:
+        fig = px.bar(q, x="controller", y="ttr_conditional_mean", color="controller",
+                     barmode="group", title="Time-to-recover (conditional mean)")
+        st.plotly_chart(fig, use_container_width=True)
+
+# Compact table (top 50 rows of filtered grouped)
+show_cols = [c for c in ["controller","grid","turbulence","failure","n","overshoot_mean","time_to_recover_mean","crash_mean","control_effort_mean","recovery_rate","ttr_conditional_mean"] if c in q.columns]
+st.dataframe(q[show_cols].head(50))
+
 for name, sel in [
     ("controller", sel_controller),
     ("grid", sel_grid),
