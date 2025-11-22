@@ -26,9 +26,16 @@ LATEST_BLOB = os.getenv("LATEST_BLOB", "latest.txt")
 GROUPED_NAME = os.getenv("GROUPED_NAME", "metrics_summary_grouped.csv")
 RAW_NAME = os.getenv("RAW_NAME", "metrics_summary_raw.csv")
 
+# Visual targets (reference lines)
+TARGET_OVERSHOOT = float(os.getenv("TARGET_OVERSHOOT", "0.10"))  # 10% overshoot
+TARGET_EFFORT = float(os.getenv("TARGET_EFFORT", "0.50"))        # arbitrary effort bound
+
+CONTROLLER_ORDER = ["PID", "LQR", "MPC"]
+COLOR_MAP = {"PID": "#1f77b4", "LQR": "#2ca02c", "MPC": "#d62728"}
+
 st.set_page_config(page_title="UAV Control — Experiment Sweep Dashboard", layout="wide")
 st.title("UAV Control — Experiment Sweep Dashboard")
-st.caption("Means ± std over seeds; filters apply to all charts. Lower is better unless stated otherwise.")
+st.caption("Means ± std across seeds; filters apply to all charts. Lower is better unless stated otherwise.")
 
 # ---------- Blob helpers ----------
 @st.cache_data(ttl=120)
@@ -128,8 +135,9 @@ if "crash_mean" in q:
 if "recovery_rate" in q:
     q["recovery_%"] = (q["recovery_rate"].clip(0, 1) * 100).round(1)
 
-# Totals
-st.caption(f"Filtered groups: {len(q):,} rows • Raw rows: {len(df_raw):,} • Run: {ptr.ts}")
+total_groups = len(q)
+total_episodes = int(q["n"].sum()) if "n" in q else 0
+st.caption(f"Run **{ptr.ts}** • {total_groups:,} groups • {total_episodes:,} episodes")
 
 # KPI row
 def kpi(df, col, label, fmt=None, help_txt=None):
@@ -161,7 +169,7 @@ with k2[1]:
     else:
         st.metric("TTR | recovered", "–")
 
-# Textual recovery context (optional but helpful)
+# Textual recovery context
 if {"recovery_rate","ttr_conditional_mean","n"}.issubset(q.columns) and not q.empty:
     rec_n = int((q["recovery_rate"].fillna(0) * q["n"]).sum())
     st.caption(f"Recovered episodes across filtered groups: {rec_n:,}")
@@ -171,13 +179,23 @@ if {"recovery_rate","ttr_conditional_mean","n"}.issubset(q.columns) and not q.em
 
 st.divider()
 
-# ---------- Per-metric charts with error bars ----------
-def bar_with_err(df, y_col, y_label, *, pct=False, clamp=None):
+# ---------- helpers ----------
+def plot_png_download(fig, filename: str, label: str):
+    try:
+        import plotly.io as pio
+        buf = pio.to_image(fig, format="png", scale=2)  # needs kaleido
+        st.download_button(label, buf, file_name=filename, mime="image/png", use_container_width=True)
+    except Exception:
+        # Kaleido not installed in some environments; silently skip
+        pass
+
+def bar_with_err(df, y_col, y_label, *, pct=False, clamp=None, add_target=None, file_stub="chart"):
     """
     df: grouped (already filtered)
     y_col: '..._mean'
     pct: show as percent
     clamp: (lo, hi) axis range
+    add_target: float -> add dotted hline at y
     """
     if y_col not in df.columns or df.empty:
         st.info(f"Column '{y_col}' not found or empty.")
@@ -191,56 +209,60 @@ def bar_with_err(df, y_col, y_label, *, pct=False, clamp=None):
         "overshoot_median","control_effort_median"
     ] if c in df.columns]
 
-    # consistent controller colors across figures
-    color_discrete_map = {"PID":"#1f77b4","LQR":"#2ca02c","MPC":"#d62728"}
-
     fig = px.bar(
         df, x="controller", y=y_col, color="controller",
         error_y=error_y, barmode="group",
-        hover_data=hover_cols, title=y_label,
-        color_discrete_map=color_discrete_map
+        hover_data=hover_cols,
+        title=f"{y_label}  •  n={total_groups} groups / {total_episodes} episodes",
+        color_discrete_map=COLOR_MAP,
+        category_orders={"controller": CONTROLLER_ORDER}
     )
     if pct:
         fig.update_yaxes(tickformat=".0%")
     if clamp:
         fig.update_yaxes(range=list(clamp))
-    fig.update_layout(showlegend=False, margin=dict(l=10,r=10,t=50,b=10))
-    st.plotly_chart(fig, use_container_width=True)
+    if add_target is not None:
+        fig.add_hline(y=float(add_target), line_dash="dot", line_color="gray", opacity=0.5)
+    fig.update_layout(showlegend=False, margin=dict(l=10,r=10,t=60,b=10))
 
+    st.plotly_chart(fig, use_container_width=True)
+    plot_png_download(fig, f"{file_stub}_{int(time.time())}.png", "⬇️ Download chart as PNG")
+
+# ---------- Per-metric charts with error bars ----------
 c1, c2 = st.columns(2)
 with c1:
-    bar_with_err(q, "overshoot_mean", "Overshoot (mean ± std, lower is better)", clamp=(0, 2))
+    bar_with_err(
+        q, "overshoot_mean",
+        "Overshoot (mean ± std, lower is better)",
+        clamp=(0, 2), add_target=TARGET_OVERSHOOT, file_stub="overshoot"
+    )
 with c2:
     ymax = float(q["time_to_recover_mean"].max()) if "time_to_recover_mean" in q and not q.empty else 0.0
-    bar_with_err(q, "time_to_recover_mean",
-                 "Time to recover (steps, mean ± std, lower is better)",
-                 clamp=(0, min(250, max(5.0, ymax * 1.1))))  # clamp TTR to avoid flattening
+    bar_with_err(
+        q, "time_to_recover_mean",
+        "Time to recover (steps, mean ± std, lower is better)",
+        clamp=(0, min(250, max(5.0, ymax * 1.1))), file_stub="ttr"
+    )
 
 c3, c4 = st.columns(2)
 if "crash_mean" in q.columns:
     q_pct = q.copy()
     q_pct["crash_mean"] = q_pct["crash_mean"].clip(0, 1)
     with c3:
-        bar_with_err(q_pct, "crash_mean", "Crash rate (fraction, mean ± std, lower is better)",
-                     pct=True, clamp=(0, 1))
+        bar_with_err(
+            q_pct, "crash_mean",
+            "Crash rate (fraction, mean ± std, lower is better)",
+            pct=True, clamp=(0, 1), file_stub="crash"
+        )
 with c4:
-    bar_with_err(q, "control_effort_mean", "Control effort (|u|, mean ± std, lower is better)", clamp=(0, 2))
+    bar_with_err(
+        q, "control_effort_mean",
+        "Control effort (|u|, mean ± std, lower is better)",
+        clamp=(0, 2), add_target=TARGET_EFFORT, file_stub="effort"
+    )
 
-st.subheader("Overshoot by grid")
-if {"grid","controller","overshoot_mean"}.issubset(q.columns):
-    color_discrete_map = {"PID":"#1f77b4","LQR":"#2ca02c","MPC":"#d62728"}
-    fig = px.bar(q, x="grid", y="overshoot_mean", color="controller", barmode="group",
-                 error_y=q["overshoot_std"] if "overshoot_std" in q else None,
-                 hover_data=[c for c in ["controller","grid","turbulence","failure","n","recovery_%"] if c in q],
-                 color_discrete_map=color_discrete_map)
-    fig.update_layout(yaxis_title="Overshoot", margin=dict(l=10,r=10,t=50,b=10))
-    fig.update_yaxes(range=[0, 2])
-    st.plotly_chart(fig, use_container_width=True)
-
-# ---------- Pareto trade-off (small multiples: turbulence × failure) ----------
 st.subheader("Trade-off: Overshoot vs. Control Effort (Pareto view)")
 if {"overshoot_mean","control_effort_mean","controller"}.issubset(q.columns) and not q.empty:
-    color_discrete_map = {"PID":"#1f77b4","LQR":"#2ca02c","MPC":"#d62728"}
     fig = px.scatter(
         q, x="overshoot_mean", y="control_effort_mean",
         color="controller", symbol="grid",
@@ -251,12 +273,14 @@ if {"overshoot_mean","control_effort_mean","controller"}.issubset(q.columns) and
             "recovery_%","crash_%","ttr_conditional_mean",
             "overshoot_median","control_effort_median"
         ] if c in q.columns],
-        title="Lower-left is better (low overshoot & low effort)",
-        color_discrete_map=color_discrete_map
+        title=f"Lower-left is better (low overshoot & low effort)  •  n={total_groups} groups / {total_episodes} episodes",
+        color_discrete_map=COLOR_MAP,
+        category_orders={"controller": CONTROLLER_ORDER}
     )
     fig.update_xaxes(title="Overshoot", range=[0, 2])
     fig.update_yaxes(title="Control effort (|u|)", range=[0, 2])
     st.plotly_chart(fig, use_container_width=True)
+    plot_png_download(fig, f"pareto_{int(time.time())}.png", "⬇️ Download Pareto as PNG")
 
 # ---------- How to read these charts ----------
 with st.expander("How to read these charts"):

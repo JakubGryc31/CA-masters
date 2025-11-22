@@ -16,8 +16,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# ------------------------- factors / knobs -------------------------
-
 CONTROLLERS = ["PID", "LQR", "MPC"]
 GRIDS = ["30x30", "40x40"]
 TURBULENCE = ["low", "high"]
@@ -25,32 +23,27 @@ FAILURE = ["none", "sensor_bias", "actuator_sat"]
 
 # Clear hierarchy: Overshoot  PID > LQR > MPC; Effort  MPC ≥ LQR ≥ PID
 CTRL_PROFILE = {
-    "PID": {"base_overshoot": 0.030, "effort": 0.95},   # a bit sloppier, cheaper
-    "LQR": {"base_overshoot": 0.018, "effort": 1.10},   # middle ground
-    "MPC": {"base_overshoot": 0.012, "effort": 1.35},   # tighter, pricier
+    "PID": {"base_overshoot": 0.030, "effort": 0.95},
+    "LQR": {"base_overshoot": 0.018, "effort": 1.10},
+    "MPC": {"base_overshoot": 0.012, "effort": 1.35},
 }
+GRID_FACTOR = {"30x30": 1.00, "40x40": 0.95}
 
-GRID_FACTOR = {"30x30": 1.00, "40x40": 0.95}  # finer grid helps a bit
-
-# Diverse-but-stable: slightly harder "high" cases, tighter actuator ceiling,
-# and a recovery detector that's a tad easier so the recovery panel has signal.
 STRESS = {
     "turbulence": {
         "low":  {"sigma": 0.012, "tau": 0.45},
-        "high": {"sigma": 0.038, "tau": 0.22},  # was 0.035 — clearer separation
+        "high": {"sigma": 0.038, "tau": 0.22},  # slight bump for separation
     },
     "failures": {
         "sensor_bias_mag": 0.025,
-        "sat_limit": 0.50,                      # was 0.55 — more visible strain
+        "sat_limit": 0.50,
     },
     "recovery": {
-        "threshold": 0.025,  # was 0.03
+        "threshold": 0.025,
         "hysteresis": 0.015,
-        "min_hold": 6        # was 8 — a bit easier to declare recovered
+        "min_hold": 6
     }
 }
-
-# ------------------------- simulation core -------------------------
 
 @dataclass
 class EpisodeConfig:
@@ -62,7 +55,6 @@ class EpisodeConfig:
     seed: int
 
 def ou_process(rng: np.random.Generator, T: int, sigma: float, tau: float) -> np.ndarray:
-    """Simple Ornstein–Uhlenbeck noise."""
     x = np.zeros(T)
     alpha = math.exp(-1.0 / max(tau, 1e-6))
     for t in range(1, T):
@@ -72,11 +64,9 @@ def ou_process(rng: np.random.Generator, T: int, sigma: float, tau: float) -> np
 def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
     rng = np.random.default_rng(cfg.seed)
 
-    # Base params from controller and grid
     prof = CTRL_PROFILE[cfg.controller]
     base_effort = prof["effort"] / GRID_FACTOR[cfg.grid]
 
-    # Disturbance
     sig = STRESS["turbulence"][cfg.turbulence]["sigma"]
     tau = STRESS["turbulence"][cfg.turbulence]["tau"]
     noise = ou_process(rng, cfg.T, sigma=sig, tau=tau)
@@ -84,7 +74,6 @@ def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
     error = np.zeros(cfg.T)
     u = np.zeros(cfg.T)
 
-    # Failures
     bias = 0.0
     sat = None
     if cfg.failure == "sensor_bias":
@@ -92,26 +81,23 @@ def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
     elif cfg.failure == "actuator_sat":
         sat = STRESS["failures"]["sat_limit"]
 
-    # Controller gains (mild; separation driven by profiles)
     k_p = 1.2 * base_effort
     k_d = 0.3 * base_effort
 
-    # Stable dynamics + safety rails
     CONTRACT = 0.70
     COUPLE   = 0.08
     ACTUATE  = -0.08
 
-    MAX_ABS_ERR = 2.0      # clamp per step to avoid numeric blow-ups
-    DIVERGE_LIM = 1.40     # slightly stricter to let a few hard cases crash
+    MAX_ABS_ERR = 2.0
+    DIVERGE_LIM = 1.40
     DIVERGE_HOLD = 45
     diverge_count = 0
 
-    # tiny actuation dead-zone — introduces realistic stiction; hurts PID > LQR > MPC
     DEADZONE = 0.03
 
     e_prev = 0.0
     for t in range(cfg.T):
-        e_meas = error[t - 1] + bias if t > 0 else 1.0 + bias  # step starts at 1.0
+        e_meas = error[t - 1] + bias if t > 0 else 1.0 + bias
         de = e_meas - e_prev
 
         u_t = -k_p * e_meas - k_d * de
@@ -129,7 +115,6 @@ def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
         error[t] = e_next
         e_prev = e_meas
 
-        # divergence detector
         if abs(e_next) > DIVERGE_LIM:
             diverge_count += 1
             if diverge_count >= DIVERGE_HOLD:
@@ -139,8 +124,7 @@ def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
         else:
             diverge_count = 0
 
-    # -------- Metrics (bounded & robust) --------
-    overshoot = float(min(max(0.0, error.max()), 2.0))  # cap 200%
+    overshoot = float(min(max(0.0, error.max()), 2.0))
 
     rec = STRESS["recovery"]
     time_to_recover = 0.0
@@ -152,7 +136,6 @@ def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
                 time_to_recover = float(t)
                 break
 
-    # Crash proxy: sustained error or frequent actuator saturation
     sat_hits = float((np.abs(u) >= (sat if sat is not None else 10)).mean()) if len(u) else 0.0
     crash = 1.0 if (diverge_count >= DIVERGE_HOLD or np.abs(error).mean() > 0.35 or sat_hits > 0.25) else 0.0
 
@@ -170,24 +153,19 @@ def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
         "control_effort": control_effort,
     }, error, u)
 
-# ------------------------- I/O helpers -------------------------
-
 def write_timeseries_sample(root: Path, cfg: EpisodeConfig, err: np.ndarray, u: np.ndarray, limit: int = 2):
-    """Save a few tiny samples for the first couple of seeds per group."""
-    if (cfg.seed % 1000) >= limit:  # heuristic: keep samples light
+    if (cfg.seed % 1000) >= limit:
         return
     d = root / "timeseries_samples" / f"{cfg.controller}_{cfg.grid}_{cfg.turbulence}_{cfg.failure}"
     d.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"t": np.arange(len(err)), "error": err, "u": u}).to_csv(d / f"seed_{cfg.seed}.csv", index=False)
 
-# ------------------------- main sweep -------------------------
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--T", type=int, default=600, help="episode horizon (steps)")
-    ap.add_argument("--outdir", type=str, default="outputs/thesis_artifacts", help="output directory")
-    ap.add_argument("--seeds", type=int, default=5, help="episodes per (controller,grid,turbulence,failure)")
-    ap.add_argument("--seed-offset", type=int, default=0, help="additive seed offset (for batching)")
+    ap.add_argument("--T", type=int, default=600)
+    ap.add_argument("--outdir", type=str, default="outputs/thesis_artifacts")
+    ap.add_argument("--seeds", type=int, default=5)
+    ap.add_argument("--seed-offset", type=int, default=0)
     args = ap.parse_args()
 
     outdir = Path(args.outdir)
@@ -215,7 +193,6 @@ def main():
     raw_df = pd.DataFrame(rows)
     raw_df.to_csv(raw_path, index=False)
 
-    # grouped with extras
     grp_cols = ["controller", "grid", "turbulence", "failure"]
     g = (raw_df
          .groupby(grp_cols, dropna=False)
@@ -234,7 +211,6 @@ def main():
          .reset_index())
 
     g["recovery_rate"] = g["recovery_count"] / g["n"]
-    # Conditional mean time-to-recover
     cond = (raw_df[raw_df["time_to_recover"].fillna(0) > 0]
             .groupby(grp_cols)["time_to_recover"]
             .mean()
