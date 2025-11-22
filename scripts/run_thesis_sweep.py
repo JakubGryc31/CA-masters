@@ -23,12 +23,12 @@ FAILURE = ["none", "sensor_bias", "actuator_sat"]
 
 STRESS = {
     "turbulence": {
-        "low":  {"sigma": 0.01, "tau": 0.40},
-        "high": {"sigma": 0.03, "tau": 0.20},
-    },
+    "low":  {"sigma": 0.012, "tau": 0.45},
+    "high": {"sigma": 0.035, "tau": 0.22},
+},
     "failures": {
-        "sensor_bias_mag": 0.02,
-        "sat_limit": 0.60,
+        "sensor_bias_mag": 0.025,
+        "sat_limit": 0.55,
     },
     "recovery": {
         "threshold": 0.03,
@@ -38,9 +38,9 @@ STRESS = {
 }
 
 CTRL_PROFILE = {
-    "PID": {"base_overshoot": 0.020, "effort": 1.00},
-    "LQR": {"base_overshoot": 0.015, "effort": 1.15},
-    "MPC": {"base_overshoot": 0.010, "effort": 1.30},
+    "PID": {"base_overshoot": 0.030, "effort": 0.95},
+    "LQR": {"base_overshoot": 0.018, "effort": 1.10},  
+    "MPC": {"base_overshoot": 0.012, "effort": 1.35},  
 }
 GRID_FACTOR = {"30x30": 1.00, "40x40": 0.95}
 
@@ -70,9 +70,13 @@ def run_episode(cfg: EpisodeConfig) -> tuple[dict, np.ndarray, np.ndarray]:
     elif cfg.failure == "actuator_sat":
         sat = STRESS["failures"]["sat_limit"]
 
+    deadzone = 0.03
+    if abs(u_t) < deadzone:
+    u_t = 0.0
+
     k_p = 1.2 * base_effort; k_d = 0.3 * base_effort
     CONTRACT = 0.70; COUPLE = 0.08; ACTUATE = -0.08
-    MAX_ABS_ERR = 2.0; DIVERGE_LIM = 1.5; DIVERGE_HOLD = 50
+    MAX_ABS_ERR = 2.0; DIVERGE_LIM = 1.4; DIVERGE_HOLD = 45
     diverge_count = 0; e_prev = 0.0
 
     for t in range(cfg.T):
