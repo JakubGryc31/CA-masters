@@ -33,6 +33,7 @@ A batch sweep writes two CSVs:
 
 A Streamlit dashboard reads the latest run from Azure Blob Storage and renders KPI bars + a Pareto view (overshoot vs effort).
 
+[text](docs/diagram/diagram-Execution_Flow.pdf)
 ---
 
 ## Repo structure
