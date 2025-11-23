@@ -47,13 +47,11 @@ CA-masters/
 ├─ docs/ # Diagrams & final PDF report assets
 │ ├─ architecture.drawio
 │ ├─ workflow.drawio
-│ └─ UAV Control v6 final — Experiment Sweep Dashboard.pdf
+│ └─ execution_flow.pdf
 ├─ requirements.txt
 ├─ Dockerfile
-├─ .env.sample # copy to .env and fill
+├─ .env
 ├─ .gitignore
-├─ LICENSE
-└─ CITATION.cff
 ```
 
 ## Quick start (local)
