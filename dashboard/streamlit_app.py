@@ -33,8 +33,8 @@ TARGET_EFFORT = float(os.getenv("TARGET_EFFORT", "0.50"))        # arbitrary eff
 CONTROLLER_ORDER = ["PID", "LQR", "MPC"]
 COLOR_MAP = {"PID": "#1f77b4", "LQR": "#2ca02c", "MPC": "#d62728"}
 
-st.set_page_config(page_title="UAV Control — Experiment Sweep Dashboard", layout="wide")
-st.title("UAV Control — Experiment Sweep Dashboard")
+st.set_page_config(page_title="UAV Control: Experiment Sweep Dashboard", layout="wide")
+st.title("UAV Control: Experiment Sweep Dashboard")
 st.caption("Means ± std across seeds; filters apply to all charts. Lower is better unless stated otherwise.")
 
 # ---------- Blob helpers ----------
@@ -285,11 +285,11 @@ if {"overshoot_mean","control_effort_mean","controller"}.issubset(q.columns) and
 # ---------- How to read these charts ----------
 with st.expander("How to read these charts"):
     st.markdown("""
-- **Overshoot (↓)** — maximum positive tracking error (fraction of the step). Capped at 2.0 for readability.
-- **Time to recover (↓)** — steps until the error remains within a tight band (**hysteresis**) for several consecutive steps.
-- **Crash rate (↓)** — fraction of episodes that diverged or violated safety rails (sustained large error or actuator saturation).
-- **Control effort (↓)** — average absolute control |u|; lower means less aggressive actuation.
-- **Recovery rate / TTR | recovered** — how often recoveries occur and, conditional on recovery, how long it takes.
+- **Overshoot (↓)**: maximum positive tracking error (fraction of the step). Capped at 2.0 for readability.
+- **Time to recover (↓)**: steps until the error remains within a tight band (**hysteresis**) for several consecutive steps.
+- **Crash rate (↓)**: fraction of episodes that diverged or violated safety rails (sustained large error or actuator saturation).
+- **Control effort (↓)**: average absolute control |u|; lower means less aggressive actuation.
+- **Recovery rate / TTR | recovered**: how often recoveries occur and, conditional on recovery, how long it takes.
 - Error bars = **±1 std** across seeds (**n** in tooltip). Bars show **means** over current filters.
 - Pareto plot: points nearer the **lower-left** are preferable (low overshoot & low effort).
 """)

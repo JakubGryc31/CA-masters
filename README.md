@@ -1,4 +1,4 @@
-# CA-masters — UAV Control Experiments & Azure Dashboard
+# CA-masters: UAV Control Experiments & Azure Dashboard
 
 **One-line**: Reproducible UAV control experiments (PID/LQR/MPC) with an Azure Container Apps sweep pipeline and a Streamlit dashboard that pulls results directly from Azure Blob Storage.
 
@@ -28,8 +28,8 @@
 This project simulates a simplified UAV tracking task with three controllers (PID, LQR, MPC) across different grids, turbulence levels, and failure modes.  
 A batch sweep writes two CSVs:
 
-- `metrics_summary_raw.csv` — all episodes
-- `metrics_summary_grouped.csv` — means/std per (controller, grid, turbulence, failure)
+- `metrics_summary_raw.csv`: all episodes
+- `metrics_summary_grouped.csv`: means/std per (controller, grid, turbulence, failure)
 
 A Streamlit dashboard reads the latest run from Azure Blob Storage and renders KPI bars + a Pareto view (overshoot vs effort).
 
@@ -85,9 +85,9 @@ Idea: Build & push the Docker image to ACR, then run a Container Apps Job that e
 
 ### Required configuration (as secrets/variables on the job):
 
-- AZ_BLOB_URL — e.g. https://<account>.blob.core.windows.net
-- AZ_BLOB_CONTAINER — e.g. output-simulation
-- AZ_BLOB_SAS — SAS token without the leading
+- AZ_BLOB_URL: e.g. https://<account>.blob.core.windows.net
+- AZ_BLOB_CONTAINER: e.g. output-simulation
+- AZ_BLOB_SAS: SAS token without the leading
 
 ### Command / Args in job:
 
@@ -131,6 +131,9 @@ For the thesis we freeze results at:
 - metrics_summary_grouped.csv
 - metrics_summary_raw.csv
 - timeseries_samples/
+- acr image tagged: a436e8ca69602f41e3f6ad5924690b46cc520f05
+
+## Above files can be found in /docs folder 
 
 Keep latest.txt pointing to that folder, or record this run id in the thesis text to lock figures to a specific dataset.
 
