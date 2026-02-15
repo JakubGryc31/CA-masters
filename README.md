@@ -33,6 +33,10 @@ A batch sweep writes two CSVs:
 
 A Streamlit dashboard reads the latest run from Azure Blob Storage and renders KPI bars + a Pareto view (overshoot vs effort).
 
+### CA theory note (continuous + tensorial extensions)
+For theoretical justification and future extension path toward continuous and tensor-valued CA, see: `docs/theory_generalized_ca.md`.
+
+
 ---
 
 ## Repo structure
